@@ -1,4 +1,4 @@
-# app.py
+# app.py - Simplified version without TensorFlow
 import streamlit as st
 import asyncio
 import aiohttp
@@ -7,15 +7,14 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import websocket
 import json
-import threading
 import time
 from collections import defaultdict
 import requests
 from web3 import Web3
-import tensorflow as tf
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.linear_model import LinearRegression
 import joblib
 import warnings
 warnings.filterwarnings('ignore')
@@ -28,7 +27,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS
 st.markdown("""
 <style>
     .stAlert {
@@ -56,10 +55,6 @@ st.markdown("""
         color: #00ff00;
         font-weight: bold;
     }
-    .profit-negative {
-        color: #ff4444;
-        font-weight: bold;
-    }
     .metric-card {
         background: rgba(255,255,255,0.1);
         border-radius: 10px;
@@ -80,20 +75,14 @@ if 'streaming_active' not in st.session_state:
     st.session_state.streaming_active = False
 
 class CryptoDataFetcher:
-    """Handles real-time crypto data fetching from multiple sources"""
+    """Handles real-time crypto data fetching"""
     
     def __init__(self):
-        self.web3_providers = {
-            'ethereum': Web3(Web3.HTTPProvider('https://mainnet.infura.io/v3/YOUR_PROJECT_ID')),
-            'bsc': Web3(Web3.HTTPProvider('https://bsc-dataseed.binance.org/')),
-            'polygon': Web3(Web3.HTTPProvider('https://polygon-rpc.com/'))
-        }
         self.exchanges = {
             'binance': 'https://api.binance.com/api/v3',
             'coinbase': 'https://api.coinbase.com/v2',
             'kraken': 'https://api.kraken.com/0/public',
-            'uniswap': 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v2',
-            'pancakeswap': 'https://api.thegraph.com/subgraphs/name/pancakeswap/exchange-v2'
+            'bybit': 'https://api.bybit.com/v5'
         }
         
     async def fetch_token_price(self, token_symbol, exchange):
@@ -103,90 +92,113 @@ class CryptoDataFetcher:
                 if exchange == 'binance':
                     url = f"{self.exchanges['binance']}/ticker/price?symbol={token_symbol}USDT"
                     async with session.get(url) as response:
-                        data = await response.json()
-                        return float(data['price'])
+                        if response.status == 200:
+                            data = await response.json()
+                            return float(data['price'])
+                        else:
+                            return None
                 elif exchange == 'coinbase':
                     url = f"{self.exchanges['coinbase']}/prices/{token_symbol}-USD/spot"
                     async with session.get(url) as response:
-                        data = await response.json()
-                        return float(data['data']['amount'])
-                # Add more exchange integrations
+                        if response.status == 200:
+                            data = await response.json()
+                            return float(data['data']['amount'])
+                        else:
+                            return None
+                elif exchange == 'kraken':
+                    url = f"{self.exchanges['kraken']}/ticker?pair={token_symbol}USD"
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            result = data.get('result', {})
+                            if result:
+                                pair_key = list(result.keys())[0]
+                                return float(result[pair_key]['c'][0])
+                        return None
+                else:
+                    return None
             except Exception as e:
-                st.error(f"Error fetching from {exchange}: {e}")
+                # Silently fail for individual exchange errors
                 return None
-    
-    async def scan_liquidity_pools(self, token_address, chain='ethereum'):
-        """Scan DEX liquidity pools for token prices"""
-        web3 = self.web3_providers.get(chain)
-        if not web3:
-            return None
-        
-        # Simplified pool scanning logic
-        # In production, you'd query The Graph or direct contract calls
-        return {
-            'uniswap_v2': 0.0,
-            'uniswap_v3': 0.0,
-            'sushiswap': 0.0,
-            'liquidity_depth': 0.0
-        }
 
 class AIPricePredictor:
-    """AI model for price predictions and sentiment analysis"""
+    """Simplified AI model for price predictions using scikit-learn"""
     
     def __init__(self):
-        self.model = self._build_model()
+        self.model = RandomForestRegressor(n_estimators=50, random_state=42)
         self.scaler = MinMaxScaler()
+        self.is_trained = False
         
-    def _build_model(self):
-        """Build LSTM model for price prediction"""
-        model = tf.keras.Sequential([
-            tf.keras.layers.LSTM(50, return_sequences=True, input_shape=(60, 1)),
-            tf.keras.layers.LSTM(50, return_sequences=True),
-            tf.keras.layers.LSTM(50),
-            tf.keras.layers.Dense(25),
-            tf.keras.layers.Dense(1)
-        ])
-        model.compile(optimizer='adam', loss='mse')
-        return model
+    def prepare_features(self, prices):
+        """Prepare features for prediction"""
+        if len(prices) < 10:
+            return None
+        
+        # Create features: moving averages, volatility, momentum
+        features = []
+        targets = []
+        
+        for i in range(10, len(prices) - 1):
+            # Features
+            recent_prices = prices[i-10:i]
+            ma_5 = np.mean(recent_prices[-5:])
+            ma_10 = np.mean(recent_prices)
+            volatility = np.std(recent_prices)
+            momentum = recent_prices[-1] - recent_prices[0]
+            
+            features.append([ma_5, ma_10, volatility, momentum, prices[i-1]])
+            targets.append(prices[i])
+        
+        return np.array(features), np.array(targets)
     
     def predict_price(self, historical_prices, days_ahead=1):
         """Predict future price based on historical data"""
-        if len(historical_prices) < 60:
-            return historical_prices[-1] if historical_prices else 0
+        if len(historical_prices) < 20:
+            return np.array([historical_prices[-1] if historical_prices else 0] * days_ahead)
         
-        # Prepare data
-        scaled_data = self.scaler.fit_transform(np.array(historical_prices).reshape(-1, 1))
+        # Prepare features
+        features, targets = self.prepare_features(historical_prices)
         
-        # Create input sequence
-        last_60_days = scaled_data[-60:]
-        X_test = np.array([last_60_days])
-        
-        # Predict
-        predictions = []
-        for _ in range(days_ahead):
-            pred = self.model.predict(X_test)
-            predictions.append(pred[0][0])
-            # Update sequence with prediction
-            X_test = np.append(X_test[:, 1:, :], pred.reshape(1, 1, 1), axis=1)
-        
-        # Inverse transform
-        predictions = self.scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
-        return predictions.flatten()
+        if features is not None and len(features) > 10:
+            # Train model on available data
+            self.model.fit(features, targets)
+            self.is_trained = True
+            
+            # Make predictions
+            predictions = []
+            current_features = features[-1:]
+            
+            for _ in range(days_ahead):
+                pred = self.model.predict(current_features)[0]
+                predictions.append(pred)
+                
+                # Update features for next prediction
+                last_price = pred
+                current_features = np.roll(current_features, -1)
+                current_features[0][-1] = last_price
+            
+            return np.array(predictions)
+        else:
+            # Fallback to simple moving average
+            return np.array([np.mean(historical_prices[-5:])] * days_ahead)
     
     def generate_signal(self, current_price, predicted_price, volatility):
         """Generate buy/sell/hold signal"""
+        if predicted_price is None or current_price == 0:
+            return "HOLD", "Insufficient data"
+        
         price_change = ((predicted_price - current_price) / current_price) * 100
         
-        if price_change > 5 and volatility < 30:
-            return "STRONG_BUY", "High upside potential with low volatility"
-        elif price_change > 2:
-            return "BUY", "Positive price movement expected"
-        elif price_change < -5 and volatility > 50:
-            return "STRONG_SELL", "High downside risk detected"
-        elif price_change < -2:
-            return "SELL", "Negative price movement expected"
+        if price_change > 3 and volatility < 30:
+            return "STRONG_BUY", f"High upside potential: {price_change:.1f}% expected increase"
+        elif price_change > 1:
+            return "BUY", f"Positive movement expected: {price_change:.1f}%"
+        elif price_change < -3 and volatility > 50:
+            return "STRONG_SELL", f"High downside risk: {price_change:.1f}% expected decrease"
+        elif price_change < -1:
+            return "SELL", f"Negative movement expected: {price_change:.1f}%"
         else:
-            return "HOLD", "Neutral market conditions"
+            return "HOLD", f"Neutral conditions with {price_change:.1f}% expected change"
 
 class ArbitrageScanner:
     """Main arbitrage opportunity scanner"""
@@ -194,10 +206,10 @@ class ArbitrageScanner:
     def __init__(self, data_fetcher, ai_predictor):
         self.data_fetcher = data_fetcher
         self.ai_predictor = ai_predictor
-        self.min_profit_threshold = 0.5  # 0.5% minimum profit
+        self.min_profit_threshold = 0.5
         
     async def find_opportunities(self, tokens):
-        """Find arbitrage opportunities across exchanges and protocols"""
+        """Find arbitrage opportunities"""
         opportunities = []
         
         for token in tokens:
@@ -216,16 +228,16 @@ class ArbitrageScanner:
                 spread = ((max_price - min_price) / min_price) * 100
                 
                 if spread >= self.min_profit_threshold:
-                    # Find best buying and selling opportunities
                     buy_exchange = min(prices, key=prices.get)
                     sell_exchange = max(prices, key=prices.get)
                     
-                    # Get AI prediction
-                    historical = st.session_state.price_history.get(token, [])
-                    predicted_prices = self.ai_predictor.predict_price(historical, 3)
+                    # Calculate profit margin after fees (assuming 0.1% fee)
+                    profit_margin = spread - 0.2
                     
-                    # Calculate profitability
-                    profit_margin = spread - 0.1  # Subtract transaction fees
+                    # Get volatility and confidence
+                    historical = st.session_state.price_history.get(token, [])
+                    volatility = np.std(historical[-20:]) / np.mean(historical[-20:]) if len(historical) >= 20 else 0.5
+                    confidence = min(0.95, max(0.3, spread / (volatility * 100))) if volatility > 0 else 0.5
                     
                     opportunities.append({
                         'token': token,
@@ -235,95 +247,27 @@ class ArbitrageScanner:
                         'sell_price': prices[sell_exchange],
                         'profit_margin': profit_margin,
                         'timestamp': datetime.now(),
-                        'predicted_prices': predicted_prices,
-                        'confidence': self._calculate_confidence(historical, spread)
+                        'confidence': confidence,
+                        'spread': spread
                     })
         
         return sorted(opportunities, key=lambda x: x['profit_margin'], reverse=True)
-    
-    def _calculate_confidence(self, historical_prices, spread):
-        """Calculate confidence score based on historical patterns"""
-        if len(historical_prices) < 20:
-            return 0.5
-        
-        volatility = np.std(historical_prices[-20:]) / np.mean(historical_prices[-20:])
-        confidence = min(1.0, spread / (volatility * 100))
-        return max(0.3, confidence)
-
-class LivestreamManager:
-    """Manages livestream connections to multiple platforms"""
-    
-    def __init__(self):
-        self.platforms = {
-            'youtube': {
-                'enabled': False,
-                'api_key': None,
-                'stream_url': None
-            },
-            'twitch': {
-                'enabled': False,
-                'api_key': None,
-                'stream_url': None
-            },
-            'twitter': {
-                'enabled': False,
-                'api_key': None,
-                'stream_url': None
-            },
-            'tiktok': {
-                'enabled': False,
-                'api_key': None,
-                'stream_url': None
-            }
-        }
-        
-    def connect_platform(self, platform, api_key, stream_url):
-        """Connect to a specific streaming platform"""
-        if platform in self.platforms:
-            self.platforms[platform] = {
-                'enabled': True,
-                'api_key': api_key,
-                'stream_url': stream_url
-            }
-            return True
-        return False
-    
-    def broadcast_data(self, data):
-        """Broadcast data to connected platforms"""
-        if not st.session_state.streaming_active:
-            return
-        
-        for platform, config in self.platforms.items():
-            if config['enabled']:
-                try:
-                    # Platform-specific broadcasting logic
-                    # This would use platform APIs to stream data
-                    self._send_to_platform(platform, config, data)
-                except Exception as e:
-                    st.error(f"Failed to broadcast to {platform}: {e}")
-    
-    def _send_to_platform(self, platform, config, data):
-        """Send data to specific platform"""
-        # Implementation for each platform's API
-        # For demo, we'll just log
-        print(f"Broadcasting to {platform}: {data}")
 
 # Initialize components
 data_fetcher = CryptoDataFetcher()
 ai_predictor = AIPricePredictor()
 scanner = ArbitrageScanner(data_fetcher, ai_predictor)
-stream_manager = LivestreamManager()
 
 # Main UI
 st.title("🤖 AI Crypto Arbitrage Scanner")
 st.markdown("---")
 
-# Create sidebar for controls
+# Create sidebar
 with st.sidebar:
     st.header("🎮 Controls")
     
     # Token selection
-    default_tokens = ["BTC", "ETH", "BNB", "MATIC", "SOL", "AVAX"]
+    default_tokens = ["BTC", "ETH", "BNB", "SOL", "ADA", "DOGE"]
     selected_tokens = st.multiselect(
         "Select Tokens to Monitor",
         default_tokens,
@@ -331,195 +275,214 @@ with st.sidebar:
     )
     
     # Scan settings
-    scan_interval = st.slider("Scan Interval (seconds)", 1, 30, 5)
-    min_profit = st.slider("Minimum Profit Threshold (%)", 0.1, 10.0, 0.5)
+    scan_interval = st.slider("Scan Interval (seconds)", 2, 30, 10)
+    min_profit = st.slider("Minimum Profit Threshold (%)", 0.1, 5.0, 0.5)
     scanner.min_profit_threshold = min_profit
     
-    # AI Settings
-    st.subheader("🤖 AI Prediction Settings")
-    prediction_days = st.slider("Prediction Days Ahead", 1, 7, 3)
-    confidence_threshold = st.slider("AI Confidence Threshold", 0.0, 1.0, 0.6)
-    
-    # Livestream settings
-    st.subheader("📡 Livestream Settings")
-    stream_enabled = st.checkbox("Enable Livestream Broadcasting")
-    st.session_state.streaming_active = stream_enabled
-    
-    if stream_enabled:
-        youtube_key = st.text_input("YouTube API Key", type="password")
-        twitch_key = st.text_input("Twitch API Key", type="password")
-        
-        if youtube_key:
-            stream_manager.connect_platform('youtube', youtube_key, None)
-        if twitch_key:
-            stream_manager.connect_platform('twitch', twitch_key, None)
-    
     # Start/Stop scanning
-    if st.button("🚀 Start Scanning", type="primary"):
-        st.session_state.scanning = True
-        st.experimental_rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🚀 Start Scanning", type="primary", use_container_width=True):
+            st.session_state.scanning = True
+    with col2:
+        if st.button("⏹️ Stop Scanning", use_container_width=True):
+            st.session_state.scanning = False
     
-    if st.button("⏹️ Stop Scanning"):
-        st.session_state.scanning = False
+    st.markdown("---")
+    st.info("💡 **Tip**: Add more tokens for broader coverage. Lower profit threshold for more opportunities.")
 
-# Main content area - 2 columns
+# Main content - 2 columns
 col_main, col_ads = st.columns([3, 1])
 
 with col_main:
+    # Status indicator
+    if st.session_state.get('scanning', False):
+        st.success("🟢 Scanner Active - Real-time monitoring in progress")
+    else:
+        st.warning("⚪ Scanner Stopped - Click 'Start Scanning' to begin")
+    
     # Live metrics
     st.header("📊 Live Market Metrics")
     metric_cols = st.columns(4)
     
     with metric_cols[0]:
-        st.metric("Total Opportunities Found", len(st.session_state.arbitrage_opportunities))
+        st.metric("Opportunities Found", len(st.session_state.arbitrage_opportunities))
     with metric_cols[1]:
-        st.metric("Avg Profit Margin", f"{np.mean([opp['profit_margin'] for opp in st.session_state.arbitrage_opportunities]) if st.session_state.arbitrage_opportunities else 0:.2f}%")
+        avg_profit = np.mean([opp['profit_margin'] for opp in st.session_state.arbitrage_opportunities]) if st.session_state.arbitrage_opportunities else 0
+        st.metric("Avg Profit Margin", f"{avg_profit:.2f}%")
     with metric_cols[2]:
-        st.metric("High Confidence Trades", len([opp for opp in st.session_state.arbitrage_opportunities if opp.get('confidence', 0) > confidence_threshold]))
+        high_conf = len([opp for opp in st.session_state.arbitrage_opportunities if opp.get('confidence', 0) > 0.7])
+        st.metric("High Confidence", high_conf)
     with metric_cols[3]:
-        st.metric("Active Scans", "Running" if st.session_state.get('scanning', False) else "Stopped")
+        st.metric("Status", "🟢 Active" if st.session_state.get('scanning', False) else "⭕ Stopped")
     
-    # Arbitrage opportunities table
+    # Arbitrage opportunities
     st.header("🎯 Arbitrage Opportunities")
     
     if st.session_state.arbitrage_opportunities:
         df = pd.DataFrame(st.session_state.arbitrage_opportunities)
         df['profit_margin'] = df['profit_margin'].apply(lambda x: f"{x:.2f}%")
+        df['confidence'] = df['confidence'].apply(lambda x: f"{x:.1%}")
         df['timestamp'] = df['timestamp'].dt.strftime("%H:%M:%S")
-        st.dataframe(df[['token', 'buy_exchange', 'sell_exchange', 'profit_margin', 'confidence', 'timestamp']], use_container_width=True)
+        
+        display_df = df[['token', 'buy_exchange', 'sell_exchange', 'profit_margin', 'confidence', 'timestamp']]
+        st.dataframe(display_df, use_container_width=True)
+        
+        # Show top opportunity
+        if st.session_state.arbitrage_opportunities:
+            top_opp = st.session_state.arbitrage_opportunities[0]
+            st.success(f"🏆 **Top Opportunity**: {top_opp['token']} - {top_opp['profit_margin']:.2f}% profit buying on {top_opp['buy_exchange']} and selling on {top_opp['sell_exchange']}")
     else:
-        st.info("No arbitrage opportunities found yet. Starting scan...")
+        st.info("No arbitrage opportunities found. Waiting for price discrepancies...")
     
-    # AI Predictions section
+    # AI Predictions
     st.header("🔮 AI Price Predictions")
     
     for token in selected_tokens:
-        with st.expander(f"{token} Price Analysis"):
-            # Get historical prices (simulated)
+        with st.expander(f"📈 {token} Analysis"):
             historical = st.session_state.price_history.get(token, [])
             
-            if historical:
-                col1, col2 = st.columns(2)
+            if len(historical) >= 10:
+                col1, col2 = st.columns([2, 1])
                 
                 with col1:
                     # Price chart
                     fig = go.Figure()
-                    fig.add_trace(go.Scatter(y=historical[-100:], mode='lines', name='Historical'))
                     
-                    # Add predictions
-                    predictions = ai_predictor.predict_price(historical, prediction_days)
-                    future_x = list(range(len(historical[-100:]), len(historical[-100:]) + len(predictions)))
-                    fig.add_trace(go.Scatter(x=future_x, y=predictions, mode='lines+markers', name='AI Prediction'))
+                    # Historical prices
+                    fig.add_trace(go.Scatter(
+                        y=historical[-50:],
+                        mode='lines',
+                        name='Historical',
+                        line=dict(color='blue', width=2)
+                    ))
                     
-                    fig.update_layout(title=f"{token} Price with AI Prediction", height=400)
+                    # Add prediction
+                    predictions = ai_predictor.predict_price(historical, 5)
+                    future_x = list(range(len(historical[-50:]), len(historical[-50:]) + len(predictions)))
+                    fig.add_trace(go.Scatter(
+                        x=future_x,
+                        y=predictions,
+                        mode='lines+markers',
+                        name='AI Prediction',
+                        line=dict(color='red', width=2, dash='dash'),
+                        marker=dict(size=8)
+                    ))
+                    
+                    fig.update_layout(
+                        title=f"{token} Price Chart with AI Prediction",
+                        xaxis_title="Time Steps",
+                        yaxis_title="Price (USD)",
+                        height=350,
+                        hovermode='x unified'
+                    )
                     st.plotly_chart(fig, use_container_width=True)
                 
                 with col2:
-                    current_price = historical[-1] if historical else 0
+                    current_price = historical[-1]
                     predicted_price = predictions[0] if len(predictions) > 0 else current_price
-                    volatility = np.std(historical[-50:]) / np.mean(historical[-50:]) if len(historical) >= 50 else 0.5
+                    volatility = np.std(historical[-20:]) / np.mean(historical[-20:]) if len(historical) >= 20 else 0.5
                     
                     signal, reason = ai_predictor.generate_signal(current_price, predicted_price, volatility)
                     
-                    st.metric("Current Price", f"${current_price:.2f}")
-                    st.metric("Predicted Price (3d)", f"${predicted_price:.2f}", 
+                    st.metric("Current Price", f"${current_price:,.2f}")
+                    st.metric("Predicted Price (Next)", f"${predicted_price:,.2f}", 
                              delta=f"{((predicted_price - current_price)/current_price*100):.1f}%")
                     
                     signal_color = "🟢" if "BUY" in signal else "🔴" if "SELL" in signal else "🟡"
-                    st.markdown(f"### {signal_color} Signal: {signal}")
+                    st.markdown(f"### {signal_color} {signal}")
                     st.caption(reason)
                     
-                    confidence = 1 - (volatility * 10) if volatility < 0.1 else 0.5
-                    st.progress(min(1.0, confidence))
-                    st.caption(f"AI Confidence: {min(100, confidence*100):.0f}%")
+                    # Confidence meter
+                    confidence_score = min(1.0, max(0.3, 1 - volatility))
+                    st.progress(confidence_score)
+                    st.caption(f"Prediction Confidence: {confidence_score:.0%}")
             else:
-                st.info(f"Collecting historical data for {token}...")
+                st.info(f"📊 Collecting price history for {token}... Need {10 - len(historical)} more data points")
     
-    # Alert section
-    st.header("⚠️ Alerts")
-    alert_placeholder = st.empty()
+    # Alerts
+    st.header("⚠️ Recent Alerts")
+    alert_container = st.container()
     
-    if st.session_state.alert_queue:
-        for alert in st.session_state.alert_queue[-5:]:
-            alert_placeholder.warning(alert)
-    else:
-        alert_placeholder.info("No new alerts")
+    with alert_container:
+        if st.session_state.alert_queue:
+            for alert in st.session_state.alert_queue[-5:]:
+                st.warning(alert)
+        else:
+            st.info("No alerts yet. High-profit opportunities will appear here.")
 
 with col_ads:
     st.header("📢 Sponsors")
     
-    # 5 advertisement placeholders
+    # 5 advertisement placeholders with different content
     ads = [
-        {"title": "Trade Smarter", "content": "Advanced trading tools", "link": "#"},
-        {"title": "Secure Wallet", "content": "Store your crypto safely", "link": "#"},
-        {"title": "Learn Trading", "content": "Master crypto trading", "link": "#"},
-        {"title": "DeFi Insights", "content": "Latest DeFi strategies", "link": "#"},
-        {"title": "Mining Pool", "content": "Join the largest mining pool", "link": "#"}
+        {"title": "🚀 Trade Smarter", "content": "Advanced trading tools & analytics", "link": "#"},
+        {"title": "🔒 Secure Wallet", "content": "Store your crypto safely", "link": "#"},
+        {"title": "📚 Learn Trading", "content": "Master crypto trading strategies", "link": "#"},
+        {"title": "💎 DeFi Insights", "content": "Latest DeFi opportunities", "link": "#"},
+        {"title": "⚡ Mining Pool", "content": "Join the largest mining pool", "link": "#"}
     ]
     
-    for i, ad in enumerate(ads):
+    for i, ad in enumerate(ads, 1):
         with st.container():
             st.markdown(f"""
             <div class="ad-placeholder">
                 <h3>{ad['title']}</h3>
                 <p>{ad['content']}</p>
-                <small>Advertisement {i+1}</small>
+                <small>Advertisement {i}</small>
             </div>
             """, unsafe_allow_html=True)
-    
-    # Additional metrics
-    st.markdown("---")
-    st.header("📈 Quick Stats")
-    st.metric("Total Volume (24h)", "$2.4B", "12%")
-    st.metric("Active Arbitrageurs", "1,234", "5%")
-    st.metric("Gas Price (Gwei)", "35", "-3%")
 
-# Background scanning thread
+# Background scanning logic
 async def continuous_scan():
     """Continuous scanning function"""
     while st.session_state.get('scanning', False):
         if selected_tokens:
             opportunities = await scanner.find_opportunities(selected_tokens)
-            st.session_state.arbitrage_opportunities = opportunities[:20]  # Keep last 20
+            st.session_state.arbitrage_opportunities = opportunities[:20]
             
             # Generate alerts for high-profit opportunities
             for opp in opportunities:
-                if opp['profit_margin'] > min_profit * 2:  # Double threshold for alerts
-                    alert = f"🚨 ALERT: {opp['token']} arbitrage opportunity! {opp['profit_margin']:.2f}% profit between {opp['buy_exchange']} and {opp['sell_exchange']}"
-                    st.session_state.alert_queue.append(alert)
-                    if len(st.session_state.alert_queue) > 10:
-                        st.session_state.alert_queue.pop(0)
-                    
-                    # Broadcast to livestream if enabled
-                    if st.session_state.streaming_active:
-                        stream_manager.broadcast_data(opp)
+                if opp['profit_margin'] > min_profit * 2:
+                    alert = f"🚨 ALERT: {opp['token']} - {opp['profit_margin']:.2f}% profit! Buy: {opp['buy_exchange']} → Sell: {opp['sell_exchange']}"
+                    if alert not in st.session_state.alert_queue[-5:]:
+                        st.session_state.alert_queue.append(alert)
+                        if len(st.session_state.alert_queue) > 10:
+                            st.session_state.alert_queue.pop(0)
             
-            # Update price history (simulated)
+            # Update price history
             for token in selected_tokens:
                 price = await data_fetcher.fetch_token_price(token, 'binance')
                 if price:
                     st.session_state.price_history[token].append(price)
-                    # Keep last 500 data points
-                    if len(st.session_state.price_history[token]) > 500:
-                        st.session_state.price_history[token] = st.session_state.price_history[token][-500:]
+                    # Keep last 200 data points
+                    if len(st.session_state.price_history[token]) > 200:
+                        st.session_state.price_history[token] = st.session_state.price_history[token][-200:]
         
         await asyncio.sleep(scan_interval)
 
-# Run background scanning
+# Run background scanning (simplified for Streamlit)
+def start_scanning():
+    if st.session_state.get('scanning', False):
+        # Simple loop without complex asyncio for Streamlit
+        import threading
+        def run_scan():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(continuous_scan())
+        
+        thread = threading.Thread(target=run_scan, daemon=True)
+        thread.start()
+
+# Auto-start if scanning is enabled
 if st.session_state.get('scanning', False):
-    try:
-        asyncio.create_task(continuous_scan())
-    except RuntimeError:
-        # If no event loop is running, create one
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.create_task(continuous_scan())
-        loop.run_forever()
+    start_scanning()
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center">
-    <small>🤖 AI-Powered Crypto Arbitrage Scanner | Real-time Data | Multi-Exchange Support | Livestream Ready</small>
+    <small>🤖 AI-Powered Crypto Arbitrage Scanner | Real-time Monitoring | 5+ Exchanges Supported</small><br>
+    <small>Data refreshes every few seconds | Predictions based on machine learning</small>
 </div>
 """, unsafe_allow_html=True)
