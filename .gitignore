@@ -1,2 +1,33 @@
-# Create .gitignore in project root
-touch .gitignore
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# API keys and secrets
+*.key
+*.pem
+config.py
+secrets.py
+
+# Data files
+*.csv
+*.h5
+*.pkl
+*.joblib
