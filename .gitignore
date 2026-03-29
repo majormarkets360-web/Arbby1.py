@@ -1,0 +1,2 @@
+# Create .gitignore in project root
+touch .gitignore
