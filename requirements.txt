@@ -1,5 +1,14 @@
-streamlit
-pandas
-web3
-ccxt
-asyncio
+# requirements.txt
+streamlit==1.28.0
+pandas==2.0.3
+numpy==1.24.3
+plotly==5.17.0
+aiohttp==3.8.5
+websocket-client==1.6.1
+web3==6.11.1
+tensorflow==2.13.0
+scikit-learn==1.3.0
+joblib==1.3.2
+python-dotenv==1.0.0
+requests==2.31.0
+asyncio==3.4.3
