@@ -99,6 +99,10 @@ if 'selected_exchanges' not in st.session_state:
     st.session_state.selected_exchanges = []
 if 'selected_tokens' not in st.session_state:
     st.session_state.selected_tokens = []
+if 'scan_interval' not in st.session_state:
+    st.session_state.scan_interval = 10
+if 'min_profit_threshold' not in st.session_state:
+    st.session_state.min_profit_threshold = 0.5
 
 # Comprehensive list of cryptocurrencies by category
 CRYPTO_CATEGORIES = {
@@ -176,6 +180,305 @@ for category, tokens in CRYPTO_CATEGORIES.items():
     ALL_TOKENS.extend(tokens)
 ALL_TOKENS = sorted(list(set(ALL_TOKENS)))  # Remove duplicates and sort
 
+# Technical indicator functions
+def calculate_rsi(prices, period=14):
+    """Calculate RSI technical indicator with support for multiple data formats"""
+    # Handle different input types
+    if isinstance(prices, list) and len(prices) > 0:
+        # Check if prices are dictionaries with 'close' key
+        if isinstance(prices[0], dict):
+            # Extract close prices from dictionaries
+            close_prices = []
+            for p in prices:
+                if isinstance(p, dict):
+                    # Try to get close price, fallback to other common keys
+                    close_prices.append(p.get('close', p.get('price', p.get('value', 0))))
+                else:
+                    close_prices.append(p)
+        else:
+            close_prices = prices
+    else:
+        return 50
+    
+    if len(close_prices) < period + 1:
+        return 50
+    
+    # Convert to numpy array for easier calculation
+    close_array = np.array(close_prices[-period-1:])
+    deltas = np.diff(close_array)
+    
+    # Calculate gains and losses
+    gains = deltas[deltas > 0]
+    losses = -deltas[deltas < 0]
+    
+    avg_gain = np.mean(gains) if len(gains) > 0 else 0
+    avg_loss = np.mean(losses) if len(losses) > 0 else 0
+    
+    if avg_loss == 0:
+        return 100
+    
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    # Clamp RSI to 0-100 range
+    return max(0, min(100, rsi))
+
+def calculate_macd(prices, fast=12, slow=26, signal=9):
+    """Calculate MACD indicator"""
+    # Extract prices if they're in dictionary format
+    if isinstance(prices, list) and len(prices) > 0 and isinstance(prices[0], dict):
+        price_values = [p.get('close', p.get('price', 0)) for p in prices]
+    else:
+        price_values = prices
+    
+    if len(price_values) < slow + signal:
+        return 0, 0
+    
+    price_series = pd.Series(price_values)
+    ema_fast = price_series.ewm(span=fast, adjust=False).mean()
+    ema_slow = price_series.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    macd_signal = macd.ewm(span=signal, adjust=False).mean()
+    
+    return macd.iloc[-1], macd_signal.iloc[-1]
+
+def generate_advanced_signal(historical, current_price, volatility):
+    """Generate advanced trading signal with multiple indicators"""
+    # Extract price values if historical contains dictionaries
+    if isinstance(historical, list) and len(historical) > 0:
+        if isinstance(historical[0], dict):
+            price_values = [p.get('close', p.get('price', 0)) for p in historical]
+        else:
+            price_values = historical
+    else:
+        return "HOLD", 0, "Insufficient data"
+    
+    if len(price_values) < 30:
+        return "HOLD", 0, "Insufficient data"
+    
+    # Calculate indicators
+    ma_7 = np.mean(price_values[-7:])
+    ma_25 = np.mean(price_values[-25:])
+    rsi = calculate_rsi(price_values)
+    macd, signal = calculate_macd(price_values)
+    
+    # Trend analysis
+    trend = ma_7 - ma_25
+    trend_strength = min(1.0, abs(trend) / current_price * 100) if current_price > 0 else 0
+    
+    # Momentum
+    momentum = (price_values[-1] - price_values[-5]) / price_values[-5] if len(price_values) > 5 and price_values[-5] > 0 else 0
+    
+    # Score calculation (-1 to 1)
+    score = 0
+    
+    # Trend component
+    if trend > 0:
+        score += 0.3 * trend_strength
+    else:
+        score -= 0.3 * trend_strength
+    
+    # RSI component
+    if rsi < 30:  # Oversold
+        score += 0.3
+    elif rsi > 70:  # Overbought
+        score -= 0.3
+    
+    # MACD component
+    if macd > signal:
+        score += 0.2
+    elif macd < signal:
+        score -= 0.2
+    
+    # Momentum component
+    score += momentum * 2
+    
+    # Volatility adjustment
+    if volatility > 0.05:  # High volatility
+        score = score * 0.7
+    
+    # Clip score
+    score = np.clip(score, -1, 1)
+    
+    # Generate signal
+    if score > 0.6:
+        return "🚀 STRONG BUY", score, f"Strong bullish momentum with RSI {rsi:.0f} and positive MACD"
+    elif score > 0.2:
+        return "📈 BUY", score, f"Positive trend detected. MA crossover suggests upward movement"
+    elif score < -0.6:
+        return "🔻 STRONG SELL", abs(score), f"Bearish signals with RSI {rsi:.0f} and negative momentum"
+    elif score < -0.2:
+        return "📉 SELL", abs(score), f"Downward pressure with weakening indicators"
+    else:
+        return "⚡ HOLD", abs(score), f"Neutral market conditions. RSI: {rsi:.0f}"
+
+# Simulated price fetching function with realistic data
+def fetch_real_price(token, exchange):
+    """Fetch price from exchange with realistic simulation"""
+    try:
+        # Base prices for major tokens (simulated)
+        BASE_PRICES = {
+            'BTC': 43500, 'ETH': 2280, 'BNB': 310, 'SOL': 95, 'XRP': 0.62, 'ADA': 0.45,
+            'DOGE': 0.08, 'AVAX': 35, 'MATIC': 0.85, 'LINK': 15, 'UNI': 6.5, 'AAVE': 85,
+            'DOT': 7, 'ATOM': 9, 'NEAR': 3.2, 'FTM': 0.4, 'ALGO': 0.18, 'VET': 0.023,
+            'SAND': 0.45, 'MANA': 0.42, 'AXS': 7.2, 'GALA': 0.025, 'ENJ': 0.28,
+            'USDT': 1.00, 'USDC': 1.00, 'DAI': 1.00, 'BUSD': 1.00, 'SHIB': 0.000008,
+            'PEPE': 0.000001, 'FLOKI': 0.00002, 'BONK': 0.000001, 'WIF': 0.5,
+            'ARB': 1.2, 'OP': 1.8, 'APT': 8.5, 'ICP': 12, 'HBAR': 0.07, 'VET': 0.023,
+            'NEAR': 3.2, 'FTM': 0.4, 'ALGO': 0.18, 'SAND': 0.45, 'MANA': 0.42,
+            'AXS': 7.2, 'GALA': 0.025, 'ENJ': 0.28, 'FET': 0.8, 'AGIX': 0.5,
+            'OCEAN': 0.4, 'RNDR': 5.2, 'TAO': 250, 'GRT': 0.15
+        }
+        
+        base_price = BASE_PRICES.get(token, random.uniform(0.1, 100))
+        
+        # Add exchange-specific premium/discount
+        exchange_premium = {
+            "CEX - Binance": 0.001,
+            "CEX - Coinbase": 0.002,
+            "CEX - Kraken": -0.001,
+            "CEX - KuCoin": 0.0005,
+            "CEX - Bybit": 0.0008,
+            "CEX - OKX": 0.0003,
+            "CEX - Gate.io": -0.0005,
+            "CEX - Bitget": 0.0002,
+            "CEX - MEXC": -0.0003,
+            "DEX - Uniswap V2": 0.003,
+            "DEX - Uniswap V3": 0.002,
+            "DEX - SushiSwap": 0.0025,
+            "DEX - PancakeSwap V2": -0.002,
+            "DEX - PancakeSwap V3": -0.001,
+            "DEX - QuickSwap": 0.001,
+            "DEX - Raydium": 0.0005,
+            "DEX - Trader Joe": 0.0015,
+            "DEX - Camelot": 0.002,
+            "DEX - Velodrome": 0.001
+        }
+        
+        premium = exchange_premium.get(exchange, 0)
+        
+        # Add random variation
+        variation = random.uniform(-0.01, 0.01)
+        
+        price = base_price * (1 + premium + variation)
+        
+        # Add small random walk for price history
+        if token in st.session_state.price_history and st.session_state.price_history[token]:
+            last_price = st.session_state.price_history[token][-1]
+            if isinstance(last_price, dict):
+                last_price = last_price.get('close', last_price.get('price', last_price))
+            # Make price move realistically
+            change = random.uniform(-0.005, 0.005)
+            price = last_price * (1 + change)
+        
+        return price
+    except Exception as e:
+        print(f"Error fetching price for {token} on {exchange}: {e}")
+        return None
+
+def scan_for_opportunities():
+    """Main scanning function with enhanced logic"""
+    if not st.session_state.scanning or not st.session_state.selected_tokens or not st.session_state.selected_exchanges:
+        return
+    
+    opportunities = []
+    min_profit = st.session_state.get('min_profit_threshold', 0.5)
+    
+    for token in st.session_state.selected_tokens:
+        prices = {}
+        
+        # Get prices from all selected exchanges
+        for exchange in st.session_state.selected_exchanges:
+            price = fetch_real_price(token, exchange)
+            if price:
+                prices[exchange] = price
+        
+        # Find arbitrage opportunities
+        if len(prices) >= 2:
+            # Sort exchanges by price
+            sorted_exchanges = sorted(prices.items(), key=lambda x: x[1])
+            
+            # Check all possible pairs for best opportunity
+            for i in range(len(sorted_exchanges)):
+                for j in range(i + 1, len(sorted_exchanges)):
+                    buy_exchange, buy_price = sorted_exchanges[i]
+                    sell_exchange, sell_price = sorted_exchanges[j]
+                    
+                    # Calculate profit margin
+                    if buy_price <= 0:
+                        continue
+                    gross_profit = ((sell_price - buy_price) / buy_price) * 100
+                    
+                    # Get exchange fees
+                    buy_fee = EXCHANGES.get(buy_exchange, {}).get('fee', 0.002)
+                    sell_fee = EXCHANGES.get(sell_exchange, {}).get('fee', 0.002)
+                    total_fees = (buy_fee + sell_fee) * 100
+                    
+                    net_profit = gross_profit - total_fees
+                    
+                    # Check if profitable
+                    if net_profit >= min_profit:
+                        # Calculate confidence based on multiple factors
+                        price_spread = (sell_price - buy_price) / buy_price
+                        liquidity_score = min(1.0, price_spread * 10)  # Simulated liquidity
+                        
+                        # Get volatility from price history if available
+                        volatility = 0.03  # Default volatility
+                        if token in st.session_state.price_history and len(st.session_state.price_history[token]) > 20:
+                            hist_prices = st.session_state.price_history[token][-20:]
+                            if isinstance(hist_prices[0], dict):
+                                hist_prices = [p.get('close', p.get('price', 0)) for p in hist_prices]
+                            volatility = np.std(hist_prices) / np.mean(hist_prices) if np.mean(hist_prices) > 0 else 0.03
+                        
+                        confidence = min(0.95, max(0.3, 
+                            (net_profit / 5) * 0.4 + 
+                            (1 - min(volatility, 0.5)) * 0.3 + 
+                            liquidity_score * 0.3
+                        ))
+                        
+                        opportunities.append({
+                            'token': token,
+                            'buy_exchange': buy_exchange,
+                            'sell_exchange': sell_exchange,
+                            'buy_price': buy_price,
+                            'sell_price': sell_price,
+                            'profit': net_profit,
+                            'confidence': confidence,
+                            'timestamp': datetime.now(),
+                            'gross_profit': gross_profit,
+                            'fees': total_fees
+                        })
+    
+    # Sort by profit
+    opportunities.sort(key=lambda x: x['profit'], reverse=True)
+    st.session_state.opportunities = opportunities[:50]  # Keep top 50
+    
+    # Generate alerts for high-profit opportunities
+    for opp in opportunities[:5]:
+        if opp['profit'] > min_profit * 2:
+            alert = f"🔥 {opp['token']}: {opp['profit']:.2f}% profit! {opp['buy_exchange']} → {opp['sell_exchange']} | Confidence: {opp['confidence']:.0%}"
+            if alert not in st.session_state.alerts[-10:]:
+                st.session_state.alerts.append(alert)
+                if len(st.session_state.alerts) > 20:
+                    st.session_state.alerts.pop(0)
+
+def update_price_history():
+    """Update price history for AI predictions"""
+    for token in st.session_state.selected_tokens:
+        # Get current price from a major exchange
+        current_price = fetch_real_price(token, "CEX - Binance")
+        
+        if current_price:
+            if token not in st.session_state.price_history:
+                st.session_state.price_history[token] = []
+            
+            # Store as simple float for easier processing
+            st.session_state.price_history[token].append(current_price)
+            
+            # Keep last 500 data points
+            if len(st.session_state.price_history[token]) > 500:
+                st.session_state.price_history[token] = st.session_state.price_history[token][-500:]
+
 # Title and header
 st.title("🤖 Ultimate AI Crypto Arbitrage Scanner")
 st.markdown("### Multi-Exchange & Cross-Chain Opportunity Detector")
@@ -191,10 +494,10 @@ with st.sidebar:
     
     # Filter exchanges by type
     exchange_filter = st.multiselect(
-    "Filter by type",
-    ["All", "CEX", "DEX - Ethereum", "DEX - BSC", "DEX - Polygon", "DEX - Solana", "DEX - Arbitrum", "DEX - Avalanche", "DEX - Optimism", "DEX - Base"],
-    default=["All"]
-)
+        "Filter by type",
+        ["All", "CEX", "DEX - Ethereum", "DEX - BSC", "DEX - Polygon", "DEX - Solana", "DEX - Arbitrum", "DEX - Avalanche", "DEX - Optimism", "DEX - Base"],
+        default=["All"]
+    )
     
     # Display exchanges based on filter
     available_exchanges = []
@@ -251,9 +554,11 @@ with st.sidebar:
     st.subheader("⚙️ Scan Settings")
     col1, col2 = st.columns(2)
     with col1:
-        scan_interval = st.slider("Scan Interval (seconds)", 2, 30, 10)
+        scan_interval = st.slider("Scan Interval (seconds)", 2, 30, 10, key="scan_interval_slider")
+        st.session_state.scan_interval = scan_interval
     with col2:
-        min_profit = st.slider("Min Profit Threshold (%)", 0.1, 10.0, 0.5)
+        min_profit = st.slider("Min Profit Threshold (%)", 0.1, 10.0, 0.5, key="min_profit_slider")
+        st.session_state.min_profit_threshold = min_profit
     
     # Advanced settings
     with st.expander("⚡ Advanced Settings"):
@@ -379,549 +684,4 @@ with col_main:
         if filtered_opps:
             # Create dataframe for display
             df = pd.DataFrame(filtered_opps)
-            df['profit'] = df['profit'].apply(lambda x: f"{x:.2f}%")
-            df['confidence'] = df['confidence'].apply(lambda x: f"{x:.0%}")
-            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime("%H:%M:%S")
-            
-            # Add exchange type badges
-            df['buy_type'] = df['buy_exchange'].apply(lambda x: "CEX" if "CEX" in x else "DEX")
-            df['sell_type'] = df['sell_exchange'].apply(lambda x: "CEX" if "CEX" in x else "DEX")
-            
-            # Display table
-            st.dataframe(
-                df[['token', 'buy_exchange', 'sell_exchange', 'buy_price', 'sell_price', 'profit', 'confidence', 'timestamp']],
-                use_container_width=True,
-                column_config={
-                    "buy_price": st.column_config.NumberColumn("Buy Price", format="$%.4f"),
-                    "sell_price": st.column_config.NumberColumn("Sell Price", format="$%.4f"),
-                    "profit": st.column_config.TextColumn("Profit", help="After fees"),
-                }
-            )
-            
-            # Highlight best opportunity
-            best_opp = filtered_opps[0]
-            st.success(f"""
-            🏆 **TOP OPPORTUNITY - {best_opp['profit']:.2f}% PROFIT POTENTIAL**
-            
-            **Token**: {best_opp['token']}
-            **Buy**: {best_opp['buy_exchange']} @ ${best_opp['buy_price']:.4f}
-            **Sell**: {best_opp['sell_exchange']} @ ${best_opp['sell_price']:.4f}
-            **Confidence**: {best_opp['confidence']:.0%}
-            **Est. Profit per $1000**: ${best_opp['profit'] * 10:.2f}
-            """)
-        else:
-            st.info(f"No opportunities match your filters. Try lowering the thresholds.")
-    else:
-        st.info("🔍 No arbitrage opportunities detected yet. Scanning in progress...")
-    
-    st.markdown("---")
-    
-    # Cross-chain arbitrage section
-    st.header("🌉 Cross-Chain Arbitrage Opportunities")
-    st.caption("Price differences between the same token on different blockchains")
-    
-    cross_chain_opps = [opp for opp in st.session_state.opportunities 
-                       if "DEX" in opp['buy_exchange'] and "DEX" in opp['sell_exchange'] 
-                       and EXCHANGES.get(opp['buy_exchange'], {}).get('chain') != EXCHANGES.get(opp['sell_exchange'], {}).get('chain')]
-    
-    if cross_chain_opps:
-        for opp in cross_chain_opps[:3]:
-            buy_chain = EXCHANGES.get(opp['buy_exchange'], {}).get('chain', 'Unknown')
-            sell_chain = EXCHANGES.get(opp['sell_exchange'], {}).get('chain', 'Unknown')
-            st.info(f"""
-            **{opp['token']}**: {buy_chain} → {sell_chain}
-            Profit: **{opp['profit']:.2f}%** | Confidence: {opp['confidence']:.0%}
-            Bridge cost not included - verify gas fees
-            """)
-    else:
-        st.info("No cross-chain opportunities detected yet.")
-    
-    st.markdown("---")
-    
-    # AI Price Predictions
-    st.header("🔮 AI Price Predictions & Signals")
-    
-    if selected_tokens:
-        # Create tabs for different prediction views
-        pred_tabs = st.tabs(["📈 Price Charts", "🎯 Trading Signals", "📊 Market Sentiment"])
-        
-        with pred_tabs[0]:
-            for token in selected_tokens[:3]:  # Show top 3 tokens
-                with st.expander(f"📈 {token} Price Analysis", expanded=False):
-                    # Get price history
-                    if token not in st.session_state.price_history:
-                        st.session_state.price_history[token] = []
-                    
-                    # Show chart if we have data
-                    if len(st.session_state.price_history[token]) > 0:
-                        col1, col2 = st.columns([2, 1])
-                        
-                        with col1:
-                            # Price chart with technical indicators
-                            historical = st.session_state.price_history[token][-100:]
-                            
-                            fig = go.Figure()
-                            
-                            # Candlestick-like price chart
-                            fig.add_trace(go.Scatter(
-                                y=historical,
-                                mode='lines',
-                                name='Price',
-                                line=dict(color='#667eea', width=2),
-                                fill='tozeroy',
-                                fillcolor='rgba(102, 126, 234, 0.2)'
-                            ))
-                            
-                            # Moving averages
-                            if len(historical) > 20:
-                                ma7 = pd.Series(historical).rolling(7).mean()
-                                ma25 = pd.Series(historical).rolling(25).mean()
-                                
-                                fig.add_trace(go.Scatter(
-                                    y=ma7,
-                                    mode='lines',
-                                    name='MA 7',
-                                    line=dict(color='orange', width=1, dash='dash')
-                                ))
-                                
-                                fig.add_trace(go.Scatter(
-                                    y=ma25,
-                                    mode='lines',
-                                    name='MA 25',
-                                    line=dict(color='red', width=1, dash='dot')
-                                ))
-                            
-                            # Simple prediction (trend line)
-                            if len(historical) > 10:
-                                x = np.arange(len(historical))
-                                z = np.polyfit(x, historical, 1)
-                                p = np.poly1d(z)
-                                trend = p(x)
-                                
-                                # Future prediction
-                                future_x = np.arange(len(historical), len(historical) + 10)
-                                future_pred = p(future_x)
-                                fig.add_trace(go.Scatter(
-                                    x=future_x,
-                                    y=future_pred,
-                                    mode='lines+markers',
-                                    name='AI Prediction (10 steps)',
-                                    line=dict(color='red', width=2, dash='dot'),
-                                    marker=dict(size=6)
-                                ))
-                            
-                            fig.update_layout(
-                                title=f"{token} Price Chart with Technical Indicators",
-                                xaxis_title="Time (minutes)",
-                                yaxis_title="Price (USD)",
-                                height=400,
-                                hovermode='x unified'
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                        
-                        with col2:
-                            current_price = historical[-1] if historical else 0
-                            
-                            # Calculate technical indicators
-                            if len(historical) > 20:
-                                rsi = calculate_rsi(historical)
-                                macd, signal = calculate_macd(historical)
-                                volatility = np.std(historical[-20:]) / np.mean(historical[-20:])
-                                
-                                # Generate comprehensive signal
-                                signal, strength, reason = generate_advanced_signal(
-                                    historical, current_price, volatility
-                                )
-                                
-                                st.metric("Current Price", f"${current_price:,.4f}")
-                                st.metric("24h Change", f"{((historical[-1] - historical[-24])/historical[-24]*100):+.2f}%" if len(historical) > 24 else "N/A")
-                                st.metric("RSI", f"{rsi:.1f}", help="Relative Strength Index")
-                                st.metric("Volatility", f"{volatility:.2%}")
-                                
-                                st.markdown(f"""
-                                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                                            border-radius: 10px; padding: 15px; margin-top: 10px;">
-                                    <h3 style="margin: 0;">{signal}</h3>
-                                    <p style="margin: 5px 0 0 0; font-size: 12px;">{reason}</p>
-                                    <div style="margin-top: 10px;">
-                                        <div style="background: rgba(255,255,255,0.2); border-radius: 10px; height: 6px;">
-                                            <div style="background: {'#00ff00' if strength > 0 else '#ff4444'}; 
-                                                        width: {abs(strength)}%; height: 6px; border-radius: 10px;"></div>
-                                        </div>
-                                        <p style="margin: 5px 0 0 0; font-size: 11px;">Signal Strength: {abs(strength):.0%}</p>
-                                    </div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                
-                                confidence = max(0.3, min(0.95, 1 - volatility))
-                                st.progress(confidence)
-                                st.caption(f"AI Model Confidence: {confidence:.0%}")
-                            else:
-                                st.info(f"Collecting data for {token}... Need {20 - len(historical)} more data points")
-                    else:
-                        st.info(f"📊 Collecting initial price data for {token}...")
-        
-        with pred_tabs[1]:
-            st.subheader("🎯 Real-time Trading Signals")
-            
-            # Create signal table
-            signals_data = []
-            for token in selected_tokens[:10]:
-                if token in st.session_state.price_history and len(st.session_state.price_history[token]) > 20:
-                    historical = st.session_state.price_history[token][-50:]
-                    current = historical[-1]
-                    volatility = np.std(historical[-20:]) / np.mean(historical[-20:])
-                    signal, strength, reason = generate_advanced_signal(historical, current, volatility)
-                    
-                    signals_data.append({
-                        "Token": token,
-                        "Signal": signal,
-                        "Strength": f"{strength:.0%}",
-                        "Confidence": f"{max(0.3, min(0.95, 1 - volatility)):.0%}",
-                        "Reason": reason[:50] + "..."
-                    })
-            
-            if signals_data:
-                st.dataframe(pd.DataFrame(signals_data), use_container_width=True)
-            else:
-                st.info("Gathering data for signal generation...")
-        
-        with pred_tabs[2]:
-            st.subheader("📊 Market Sentiment Analysis")
-            
-            # Create sentiment gauge for each token
-            for token in selected_tokens[:5]:
-                if token in st.session_state.price_history and len(st.session_state.price_history[token]) > 20:
-                    historical = st.session_state.price_history[token][-50:]
-                    
-                    # Calculate sentiment metrics
-                    price_trend = (historical[-1] - historical[-10]) / historical[-10] if len(historical) > 10 else 0
-                    volatility = np.std(historical[-20:]) / np.mean(historical[-20:])
-                    momentum = historical[-1] - historical[-5] if len(historical) > 5 else 0
-                    
-                    # Calculate sentiment score (-1 to 1)
-                    sentiment_score = np.clip(price_trend * 10 + momentum / historical[-1], -1, 1)
-                    
-                    col1, col2, col3 = st.columns([2, 1, 1])
-                    with col1:
-                        st.markdown(f"**{token}**")
-                    with col2:
-                        sentiment_color = "🟢" if sentiment_score > 0.2 else "🔴" if sentiment_score < -0.2 else "🟡"
-                        st.markdown(f"{sentiment_color} Sentiment: {sentiment_score:+.2f}")
-                    with col3:
-                        st.markdown(f"Volatility: {volatility:.1%}")
-                    
-                    # Sentiment gauge
-                    st.progress((sentiment_score + 1) / 2)
-                    st.caption(f"Trend: {price_trend:+.2%} | Momentum: ${momentum:+.2f}")
-                    st.markdown("---")
-    else:
-        st.info("Select tokens from the sidebar to view AI predictions")
-    
-    st.markdown("---")
-    
-    # Alerts section
-    st.header("⚠️ Live Alerts")
-    alert_container = st.container()
-    
-    with alert_container:
-        if st.session_state.alerts:
-            for alert in st.session_state.alerts[-10:]:
-                st.markdown(f'<div class="alert-box">🚨 {alert}</div>', unsafe_allow_html=True)
-        else:
-            st.info("No new alerts. High-profit opportunities will trigger notifications.")
-
-with col_ads:
-    st.header("📢 Premium Partners")
-    
-    # 5 advertisement placeholders with premium content
-    ads = [
-        {"title": "🚀 VIP Trading Suite", "desc": "Get early access to arbitrage opportunities", "badge": "Limited Spots", "color": "#f39c12"},
-        {"title": "🔒 Quantum Wallet", "desc": "Military-grade cold storage", "badge": "50% Off", "color": "#e74c3c"},
-        {"title": "📚 Arbitrage Masterclass", "desc": "Learn from top traders", "badge": "Free Webinar", "color": "#3498db"},
-        {"title": "💎 DeFi Yield Optimizer", "desc": "Maximize cross-chain returns", "badge": "14-Day Trial", "color": "#9b59b6"},
-        {"title": "⚡ Flash Loan Pro", "desc": "Execute arbitrage with leverage", "badge": "New Feature", "color": "#1abc9c"}
-    ]
-    
-    for i, ad in enumerate(ads, 1):
-        st.markdown(f"""
-        <div class="ad-placeholder" style="background: linear-gradient(135deg, {ad['color']} 0%, #2c3e50 100%);">
-            <h3>{ad['title']}</h3>
-            <p>{ad['desc']}</p>
-            <span style="background-color: rgba(255,255,255,0.2); padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold;">{ad['badge']}</span>
-            <br><br>
-            <small>Advertisement {i} • Sponsored</small>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-    
-    # Premium features teaser
-    st.markdown("---")
-    st.markdown("""
-    <div style="background: rgba(102, 126, 234, 0.1); border-radius: 10px; padding: 15px;">
-        <h4>💎 Premium Features</h4>
-        <small>✓ Real-time WebSocket feeds</small><br>
-        <small>✓ Advanced AI models</small><br>
-        <small>✓ Automated execution</small><br>
-        <small>✓ Priority alerts</small><br>
-        <br>
-        <button style="background: #667eea; color: white; border: none; padding: 8px 16px; border-radius: 5px; width: 100%;">Upgrade Now →</button>
-    </div>
-    """, unsafe_allow_html=True)
-
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center">
-    <small>🤖 Ultimate AI Crypto Arbitrage Scanner | Multi-Exchange | Cross-Chain | Real-time</small><br>
-    <small>Monitoring {} exchanges • Tracking {} tokens • Last scan: {}</small>
-</div>
-""".format(len(selected_exchanges), len(selected_tokens), 
-           st.session_state.last_scan_time if st.session_state.last_scan_time else "Not started"), 
-     unsafe_allow_html=True)
-
-# Technical indicator functions
-def calculate_rsi(prices, period=14):
-    """Calculate RSI technical indicator"""
-    if len(prices) < period + 1:
-        return 50
-    
-    deltas = np.diff(prices[-period-1:])
-    gains = deltas[deltas > 0].sum() / period
-    losses = -deltas[deltas < 0].sum() / period
-    
-    if losses == 0:
-        return 100
-    
-    rs = gains / losses
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-def calculate_macd(prices, fast=12, slow=26, signal=9):
-    """Calculate MACD indicator"""
-    if len(prices) < slow + signal:
-        return 0, 0
-    
-    ema_fast = pd.Series(prices).ewm(span=fast, adjust=False).mean()
-    ema_slow = pd.Series(prices).ewm(span=slow, adjust=False).mean()
-    macd = ema_fast - ema_slow
-    macd_signal = macd.ewm(span=signal, adjust=False).mean()
-    
-    return macd.iloc[-1], macd_signal.iloc[-1]
-
-def generate_advanced_signal(historical, current_price, volatility):
-    """Generate advanced trading signal with multiple indicators"""
-    if len(historical) < 30:
-        return "HOLD", 0, "Insufficient data"
-    
-    # Calculate indicators
-    ma_7 = np.mean(historical[-7:])
-    ma_25 = np.mean(historical[-25:])
-    rsi = calculate_rsi(historical)
-    macd, signal = calculate_macd(historical)
-    
-    # Trend analysis
-    trend = ma_7 - ma_25
-    trend_strength = min(1.0, abs(trend) / current_price * 100)
-    
-    # Momentum
-    momentum = (historical[-1] - historical[-5]) / historical[-5] if len(historical) > 5 else 0
-    
-    # Score calculation (-1 to 1)
-    score = 0
-    
-    # Trend component
-    if trend > 0:
-        score += 0.3 * trend_strength
-    else:
-        score -= 0.3 * trend_strength
-    
-    # RSI component
-    if rsi < 30:  # Oversold
-        score += 0.3
-    elif rsi > 70:  # Overbought
-        score -= 0.3
-    
-    # MACD component
-    if macd > signal:
-        score += 0.2
-    elif macd < signal:
-        score -= 0.2
-    
-    # Momentum component
-    score += momentum * 2
-    
-    # Volatility adjustment
-    if volatility > 0.05:  # High volatility
-        score = score * 0.7
-    
-    # Clip score
-    score = np.clip(score, -1, 1)
-    
-    # Generate signal
-    if score > 0.6:
-        return "🚀 STRONG BUY", score, f"Strong bullish momentum with RSI {rsi:.0f} and positive MACD"
-    elif score > 0.2:
-        return "📈 BUY", score, f"Positive trend detected. MA crossover suggests upward movement"
-    elif score < -0.6:
-        return "🔻 STRONG SELL", abs(score), f"Bearish signals with RSI {rsi:.0f} and negative momentum"
-    elif score < -0.2:
-        return "📉 SELL", abs(score), f"Downward pressure with weakening indicators"
-    else:
-        return "⚡ HOLD", abs(score), f"Neutral market conditions. RSI: {rsi:.0f}"
-
-# Simulated price fetching function with realistic data
-def fetch_real_price(token, exchange):
-    """Fetch price from exchange with realistic simulation"""
-    try:
-        # Base prices for major tokens (simulated)
-        BASE_PRICES = {
-            'BTC': 43500, 'ETH': 2280, 'BNB': 310, 'SOL': 95, 'XRP': 0.62, 'ADA': 0.45,
-            'DOGE': 0.08, 'AVAX': 35, 'MATIC': 0.85, 'LINK': 15, 'UNI': 6.5, 'AAVE': 85,
-            'DOT': 7, 'ATOM': 9, 'NEAR': 3.2, 'FTM': 0.4, 'ALGO': 0.18, 'VET': 0.023,
-            'SAND': 0.45, 'MANA': 0.42, 'AXS': 7.2, 'GALA': 0.025, 'ENJ': 0.28,
-            'USDT': 1.00, 'USDC': 1.00, 'DAI': 1.00, 'BUSD': 1.00
-        }
-        
-        base_price = BASE_PRICES.get(token, random.uniform(0.1, 100))
-        
-        # Add exchange-specific premium/discount
-        exchange_premium = {
-            "CEX - Binance": 0.001,
-            "CEX - Coinbase": 0.002,
-            "CEX - Kraken": -0.001,
-            "CEX - KuCoin": 0.0005,
-            "CEX - Bybit": 0.0008,
-            "DEX - Uniswap V2": 0.003,
-            "DEX - Uniswap V3": 0.002,
-            "DEX - SushiSwap": 0.0025,
-            "DEX - PancakeSwap V2": -0.002,
-            "DEX - PancakeSwap V3": -0.001,
-            "DEX - QuickSwap": 0.001,
-            "DEX - Raydium": 0.0005
-        }
-        
-        premium = exchange_premium.get(exchange, 0)
-        
-        # Add random variation
-        variation = random.uniform(-0.01, 0.01)
-        
-        price = base_price * (1 + premium + variation)
-        
-        # Add small random walk for price history
-        if token in st.session_state.price_history and st.session_state.price_history[token]:
-            last_price = st.session_state.price_history[token][-1]
-            # Make price move realistically
-            change = random.uniform(-0.005, 0.005)
-            price = last_price * (1 + change)
-        
-        return price
-    except:
-        return None
-
-def scan_for_opportunities():
-    """Main scanning function with enhanced logic"""
-    if not st.session_state.scanning or not st.session_state.selected_tokens or not st.session_state.selected_exchanges:
-        return
-    
-    opportunities = []
-    
-    for token in st.session_state.selected_tokens:
-        prices = {}
-        
-        # Get prices from all selected exchanges
-        for exchange in st.session_state.selected_exchanges:
-            price = fetch_real_price(token, exchange)
-            if price:
-                prices[exchange] = price
-        
-        # Find arbitrage opportunities
-        if len(prices) >= 2:
-            # Sort exchanges by price
-            sorted_exchanges = sorted(prices.items(), key=lambda x: x[1])
-            
-            # Check all possible pairs for best opportunity
-            for i in range(len(sorted_exchanges)):
-                for j in range(i + 1, len(sorted_exchanges)):
-                    buy_exchange, buy_price = sorted_exchanges[i]
-                    sell_exchange, sell_price = sorted_exchanges[j]
-                    
-                    # Calculate profit margin
-                    gross_profit = ((sell_price - buy_price) / buy_price) * 100
-                    
-                    # Get exchange fees
-                    buy_fee = EXCHANGES.get(buy_exchange, {}).get('fee', 0.002)
-                    sell_fee = EXCHANGES.get(sell_exchange, {}).get('fee', 0.002)
-                    total_fees = (buy_fee + sell_fee) * 100
-                    
-                    net_profit = gross_profit - total_fees
-                    
-                    # Check if profitable
-                    if net_profit >= st.session_state.get('min_profit', 0.5):
-                        # Calculate confidence based on multiple factors
-                        price_spread = (sell_price - buy_price) / buy_price
-                        liquidity_score = min(1.0, price_spread * 10)  # Simulated liquidity
-                        volatility = 0.03  # Simulated volatility
-                        
-                        confidence = min(0.95, max(0.3, 
-                            (net_profit / 5) * 0.4 + 
-                            (1 - volatility) * 0.3 + 
-                            liquidity_score * 0.3
-                        ))
-                        
-                        opportunities.append({
-                            'token': token,
-                            'buy_exchange': buy_exchange,
-                            'sell_exchange': sell_exchange,
-                            'buy_price': buy_price,
-                            'sell_price': sell_price,
-                            'profit': net_profit,
-                            'confidence': confidence,
-                            'timestamp': datetime.now(),
-                            'gross_profit': gross_profit,
-                            'fees': total_fees
-                        })
-    
-    # Sort by profit
-    opportunities.sort(key=lambda x: x['profit'], reverse=True)
-    st.session_state.opportunities = opportunities[:50]  # Keep top 50
-    
-    # Generate alerts for high-profit opportunities
-    for opp in opportunities[:5]:
-        if opp['profit'] > st.session_state.get('min_profit', 0.5) * 2:
-            alert = f"🔥 {opp['token']}: {opp['profit']:.2f}% profit! {opp['buy_exchange']} → {opp['sell_exchange']} | Confidence: {opp['confidence']:.0%}"
-            if alert not in st.session_state.alerts[-10:]:
-                st.session_state.alerts.append(alert)
-                if len(st.session_state.alerts) > 20:
-                    st.session_state.alerts.pop(0)
-
-def update_price_history():
-    """Update price history for AI predictions"""
-    for token in st.session_state.selected_tokens:
-        # Get current price from a major exchange
-        current_price = fetch_real_price(token, "CEX - Binance")
-        
-        if current_price:
-            if token not in st.session_state.price_history:
-                st.session_state.price_history[token] = []
-            
-            st.session_state.price_history[token].append(current_price)
-            
-            # Keep last 500 data points
-            if len(st.session_state.price_history[token]) > 500:
-                st.session_state.price_history[token] = st.session_state.price_history[token][-500:]
-
-# Main scanning loop
-if st.session_state.scanning:
-    # Update price history
-    update_price_history()
-    
-    # Scan for opportunities
-    scan_for_opportunities()
-    
-    # Update last scan time
-    st.session_state.last_scan_time = datetime.now().strftime("%H:%M:%S")
-    
-    # Auto-refresh based on interval
-    time.sleep(scan_interval)
-    st.rerun()
+            df['profit'] = df['profit'].apply(lambda x
