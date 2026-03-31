@@ -684,4 +684,4 @@ with col_main:
         if filtered_opps:
             # Create dataframe for display
             df = pd.DataFrame(filtered_opps)
-            df['profit'] = df['profit'].apply(lambda x
+            df['profit'] = df['profit'].apply(lambda x)
