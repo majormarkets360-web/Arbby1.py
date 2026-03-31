@@ -260,7 +260,7 @@ def generate_advanced_signal(historical, current_price, volatility):
     ma_7 = np.mean(price_values[-7:])
     ma_25 = np.mean(price_values[-25:])
     rsi = calculate_rsi(price_values)
-    macd, signal = calculate_macd(price_values)
+    macd, macd_signal = calculate_macd(price_values)
     
     # Trend analysis
     trend = ma_7 - ma_25
@@ -285,9 +285,9 @@ def generate_advanced_signal(historical, current_price, volatility):
         score -= 0.3
     
     # MACD component
-    if macd > signal:
+    if macd > macd_signal:
         score += 0.2
-    elif macd < signal:
+    elif macd < macd_signal:
         score -= 0.2
     
     # Momentum component
@@ -324,7 +324,7 @@ def fetch_real_price(token, exchange):
             'SAND': 0.45, 'MANA': 0.42, 'AXS': 7.2, 'GALA': 0.025, 'ENJ': 0.28,
             'USDT': 1.00, 'USDC': 1.00, 'DAI': 1.00, 'BUSD': 1.00, 'SHIB': 0.000008,
             'PEPE': 0.000001, 'FLOKI': 0.00002, 'BONK': 0.000001, 'WIF': 0.5,
-            'ARB': 1.2, 'OP': 1.8, 'APT': 8.5, 'ICP': 12, 'HBAR': 0.07, 'VET': 0.023,
+            'ARB': 1.2, 'OP': 1.8, 'APT': 8.5, 'ICP': 12, 'HBAR': 0.07,
             'NEAR': 3.2, 'FTM': 0.4, 'ALGO': 0.18, 'SAND': 0.45, 'MANA': 0.42,
             'AXS': 7.2, 'GALA': 0.025, 'ENJ': 0.28, 'FET': 0.8, 'AGIX': 0.5,
             'OCEAN': 0.4, 'RNDR': 5.2, 'TAO': 250, 'GRT': 0.15
@@ -684,4 +684,158 @@ with col_main:
         if filtered_opps:
             # Create dataframe for display
             df = pd.DataFrame(filtered_opps)
-            df['profit'] = df['profit'].apply(lambda x)
+            df['profit'] = df['profit'].apply(lambda x: f"{x:.2f}%")
+            df['confidence'] = df['confidence'].apply(lambda x: f"{x:.1%}")
+            df['buy_price'] = df['buy_price'].apply(lambda x: f"${x:.4f}")
+            df['sell_price'] = df['sell_price'].apply(lambda x: f"${x:.4f}")
+            df['timestamp'] = df['timestamp'].apply(lambda x: x.strftime("%H:%M:%S"))
+            
+            # Reorder and rename columns for display
+            display_df = df[['token', 'buy_exchange', 'sell_exchange', 'buy_price', 'sell_price', 'profit', 'confidence', 'timestamp']]
+            display_df.columns = ['Token', 'Buy From', 'Sell On', 'Buy Price', 'Sell Price', 'Profit %', 'Confidence', 'Time']
+            
+            # Display as a styled dataframe
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No opportunities match your filters")
+    else:
+        st.info("No arbitrage opportunities detected yet. Click START SCANNING to begin.")
+    
+    st.markdown("---")
+    
+    # Price charts and indicators
+    if st.session_state.selected_tokens and st.session_state.scanning:
+        st.header("📈 Price Charts & Technical Analysis")
+        
+        # Token selector for chart
+        selected_token_for_chart = st.selectbox(
+            "Select token for detailed analysis",
+            st.session_state.selected_tokens
+        )
+        
+        if selected_token_for_chart in st.session_state.price_history and len(st.session_state.price_history[selected_token_for_chart]) > 1:
+            # Prepare data for chart
+            hist_data = st.session_state.price_history[selected_token_for_chart][-100:]  # Last 100 points
+            
+            # Create figure
+            fig = go.Figure()
+            
+            # Add price line
+            fig.add_trace(go.Scatter(
+                y=hist_data,
+                mode='lines',
+                name='Price',
+                line=dict(color='#00ff00', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(0, 255, 0, 0.1)'
+            ))
+            
+            # Add moving average
+            if len(hist_data) > 7:
+                ma_7 = pd.Series(hist_data).rolling(window=7).mean()
+                fig.add_trace(go.Scatter(
+                    y=ma_7,
+                    mode='lines',
+                    name='MA 7',
+                    line=dict(color='#ffa500', width=1, dash='dash')
+                ))
+            
+            # Update layout
+            fig.update_layout(
+                title=f"{selected_token_for_chart} Price Chart",
+                xaxis_title="Time",
+                yaxis_title="Price (USD)",
+                height=400,
+                template="plotly_dark",
+                hovermode='x unified'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Technical indicators
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                rsi = calculate_rsi(hist_data)
+                st.metric("RSI (14)", f"{rsi:.1f}", 
+                         delta="Oversold" if rsi < 30 else "Overbought" if rsi > 70 else "Neutral")
+            
+            with col2:
+                macd, signal = calculate_macd(hist_data)
+                st.metric("MACD", f"{macd:.4f}", 
+                         delta="Bullish" if macd > signal else "Bearish")
+            
+            with col3:
+                volatility = np.std(hist_data[-20:]) / np.mean(hist_data[-20:]) if np.mean(hist_data[-20:]) > 0 else 0
+                st.metric("Volatility", f"{volatility:.2%}", 
+                         delta="High" if volatility > 0.05 else "Low")
+            
+            # Trading signal
+            current_price = hist_data[-1]
+            signal, score, reason = generate_advanced_signal(hist_data, current_price, volatility)
+            
+            st.info(f"**Trading Signal: {signal}** (Score: {score:.2f})\n\n{reason}")
+    
+    # Alerts section
+    if st.session_state.alerts:
+        st.header("🚨 Recent Alerts")
+        for alert in st.session_state.alerts[-5:]:
+            st.markdown(f'<div class="alert-box">🔔 {alert}</div>', unsafe_allow_html=True)
+
+with col_ads:
+    # Ad placeholder
+    st.markdown("""
+    <div class="ad-placeholder">
+        <h3>📢 Advertisement</h3>
+        <p>Your Ad Here</p>
+        <small>Reach crypto traders worldwide</small>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Additional ad spaces
+    st.markdown("---")
+    st.markdown("""
+    <div class="ad-placeholder" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+        <h4>🚀 Premium Features</h4>
+        <p>Real-time WebSocket API</p>
+        <p>Advanced AI Predictions</p>
+        <p>Automated Trading Bots</p>
+        <button style="background: white; color: #f5576c; border: none; padding: 10px 20px; border-radius: 5px; margin-top: 10px; cursor: pointer;">
+            Upgrade Now
+        </button>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.markdown("""
+    <div class="ad-placeholder" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+        <h4>📊 API Access</h4>
+        <p>Connect your own exchanges</p>
+        <p>Custom alerts & webhooks</p>
+        <p>Historical data export</p>
+        <button style="background: white; color: #00f2fe; border: none; padding: 10px 20px; border-radius: 5px; margin-top: 10px; cursor: pointer;">
+            Get API Key
+        </button>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Auto-scan logic
+if st.session_state.scanning:
+    # Check if it's time to scan
+    if st.session_state.last_scan_time is None or (datetime.now() - st.session_state.last_scan_time).seconds >= st.session_state.scan_interval:
+        # Update price history
+        update_price_history()
+        
+        # Scan for opportunities
+        scan_for_opportunities()
+        
+        # Update last scan time
+        st.session_state.last_scan_time = datetime.now()
+    
+    # Auto-refresh the page
+    time.sleep(1)
+    st.rerun()
